@@ -13,7 +13,7 @@ sev_data = readARFF("datasets/freMTPL2sev.arff")
 joined_data = right_join(freq_data, sev_data, by = join_by(IDpol == IDpol))
 joined_data = joined_data[complete.cases(joined_data), ]
 # remove NAs resulting from joining incomplete data
-joined_data = joined_data[complete.cases(joined_data), ]
+# joined_data = joined_data[complete.cases(joined_data), ]
 
 total_claim_amount = joined_data %>%
   group_by(IDpol) %>%
@@ -23,16 +23,21 @@ total_claim_amount = joined_data %>%
 insurance_data = joined_data %>%
   group_by(IDpol) %>%
   filter(row_number() == 1) %>%
+  ungroup(IDpol) %>%
   select(-ClaimAmount) %>%
   full_join(total_claim_amount, by = join_by(IDpol)) %>%
-  mutate(ClaimPerYear = TotalClaimAmount / Exposure)
+  mutate(ClaimPerYear = TotalClaimAmount / Exposure) %>%
+  select(-c(TotalClaimAmount, Exposure, ClaimNb, Density, Region, IDpol)) %>%
+  mutate(VehGas = as.factor(VehGas))
+
+
 
 # Exploratory Analysis
 
 # Boxplots der Versicherungsansprüche und der Ansprüche je Jahr zeigen wenige, jedoch extreme Ausreißer
-ggplot(insurance_data, aes(x = TotalClaimAmount)) +
-  geom_boxplot() +
-  theme_bw()
+# ggplot(insurance_data, aes(x = TotalClaimAmount)) +
+  # geom_boxplot() +
+  # theme_bw()
 
 ggplot(insurance_data, aes(x = ClaimPerYear)) +
   geom_boxplot() +
@@ -43,323 +48,201 @@ ggplot(insurance_data, aes(x = ClaimPerYear)) +
 IQR(insurance_data$ClaimPerYear)
 # Der höchste Versicherungsanspruch eines Kunden pro Jahr beträgt jedoch 18.524.548 EUR
 range(insurance_data$ClaimPerYear)
-quantiles = quantile(round(insurance_data$ClaimPerYear), probs = seq(0, 1, 0.05))
+quantile(round(insurance_data$ClaimPerYear), probs = seq(0, 1, 0.05))
 
-# Insgesamt handelt es sich um 95 Ausreißer, die mehr als 1.5 Standardabweichungen
-# vom Mittelwert der Versicherungsansprüche je Kunde je Jahr entfernt sind.
+library(lares)
+# Innerhalb der erklärenden Variablen finden sich diverse Korrelationen, beispielsweise zwischen Alter
+# des Fahrers und des Schadenfreiheitsrabattes, sowie zwischen Merkmalen des Fahrzeuges.
+corr_cross(insurance_data, # name of dataset
+           max_pvalue = 0.05, # display only significant correlations (at 5% level)
+           top = 10 # display top 10 couples of variables (by correlation coefficient)
+)
+# Zwischen der Zielvariable und den erklärenden Variablen finden sich extrem schwache Assoziationen
+# Zwar lassen lineare Korrelationen nicht ausschließen, dass es nichtlineare Zusammenhänge gibt,
+# jedoch sind die vorhanden linearen Assoziationen nicht sehr vielversprechend für ein zu trainierendes Modell
 
-# Eine Grenze von knapp 1.000.000 dient zur Teilung des Datensatzes in einen regulären
-# und einen extremen Teil
+# Die höchste lineare Korrelation mit der Zielvariable hat das Alter des Fahrers, jedoch nur mit 2%.
+corr_var(insurance_data, # name of dataset
+         ClaimPerYear, # name of variable to focus on
+         top = 5 # display top 5 correlations
+) 
 
-outlier_IDs = which(
-  insurance_data$ClaimPerYear >= 19000)
-
-outlier_data = insurance_data[outlier_IDs, ]
-print(outlier_data)
-
-insurance_data = insurance_data[!row_number(insurance_data) %in% outlier_IDs, ]
-
-# 80% der Ansprüche fallen unter einen Betrag von 4300 EUR
-# 90% der Ansprüche fallen unter einen Betrag von 9208 EUR
-quantile(round(insurance_data$ClaimPerYear), probs = seq(0.1, 1, 0.05))
-plot(density(insurance_data$ClaimPerYear))
-# insurance_data = insurance_data %>%
-# mutate(ClaimPerYear = replace(ClaimPerYear, ClaimPerYear >= 1000000, "Not Candy"))
-# quantile(round(insurance_data$ClaimPerYear), probs = seq(0.1, 1, 0.05))
-
-# Da diese extremen Ausreißer nach oben von zentraler Bedeutung für die finanzielle 
-# Gesundheit der Versicherungsgesellschaft sind, dürfen wir sie NICHT entfernen.
-
-# Ein geeignetes Modell modelliert nicht nur den bedingten Erwartungswert der
-# Zielvariable sondern deren Verteilung, welche Ausreißer berücksicht.
+feature_pred = x2y(insurance_data)
+plot(feature_pred)
+# library(h2o)
+# lasso_vars(insurance_data,
+#            ClaimPerYear)
 
 
-# Modellwahl
+# Für Ansprüche kleiner als 20000 EUR trainieren wir ein herkömmliches Modell
 
-# 
-# # 
-# str(insurance_data)
-# model_data = insurance_data %>% select(-c(IDpol, ClaimNb, Exposure, TotalClaimAmount))
-# n = nrow(model_data)
-# set.seed(12)
-# train_set = sample(n, (2/3) * n)
-# test_set =  setdiff(1:n, train_set)
-# data_train = model_data[train_set, ]
-# data_test = model_data[test_set, ]
-# 
-# library(quantregRanger)
+model_data = insurance_data %>% filter(ClaimPerYear <= 25000)
 
-# 
-# rqfit <- rq("ClaimPerYear ~ .", data = data_train, method = "fn")
-# summary(rqfit)
-# pred_quantreg = predict(rqfit, data_test)
-# data_test$Prediction = pred_quantreg
-# 
-# ggplot(data_test) +
-#   geom_point(aes(x = ClaimPerYear, y = Prediction))
-
-# n = nrow(insurance_data)
-# set.seed(123)
-# train_set = sample(n, (2/3) * n)
-# test_set =  setdiff(1:n, train_set)
-# insurance_train = insurance_data[train_set, ]
-# insurance_test = insurance_data[test_set, ]
-
-# library(grf)
-# ?quantile_forest
-# X_train = model.matrix(
-#   ~. , 
-#   data = data_train[, -which(names(data_train) %in% "ClaimPerYear")])
-# Y_train = data_train$ClaimPerYear
-# X_test = model.matrix(~. , data = data_test[, -which(names(data_test) %in% "ClaimPerYear")])
-# Y_test = data_test$ClaimPerYear
-# 
-# mod = quantile_forest(X_train, Y_train)
-outlier_data
-# library(ranger)
-# mod = ranger(
-#   "ClaimPerYear ~ .",
-#   data = outlier_data,
-#   quantreg = TRUE)
-# pred_outliers = predict(mod, outlier_data, quantiles = c(0.1, 0.5, 0.9))
-# pred_outliers
-
-
-pareto_dist = gpd(outlier_data$ClaimPerYear, 
-    threshold = min(outlier_data$ClaimPerYear), 
-    method = "ml",
-    information = c("observed"))
-
-plot(pareto_dist)
-
-pareto_dist$par.ests
-pareto_dist$information
-
-# baseline_model_0.1 = quantile(data_train$ClaimPerYear, probs = 0.1)
-# baseline_model_0.5 = quantile(data_train$ClaimPerYear, probs = 0.5)
-# baseline_model_0.9 = quantile(data_train$ClaimPerYear, probs = 0.9)
-# # baseline_model_0.95 = quantile(data_train$ClaimPerYear, probs = 0.95)
-# 
-# pred <- as.data.frame(predict(mod, X_test))
-# 
-# data_test$PredictedClaimPerYear0.1 = pred[, 1]
-# data_test$PredictedClaimPerYear0.5 = pred[, 2]
-# data_test$PredictedClaimPerYear0.9 = pred[, 3]
-# data_test$PredictedRange = data_test$PredictedClaimPerYear0.9 - data_test$PredictedClaimPerYear0.1
-# data_test$IDpol <- factor(data_test$IDpol, levels = unique(data_test$IDpol))
-# # data_test$IDpol = as.numeric(data_test$IDpol)
-# data_test = data_test %>% arrange(PredictedRange)
-# 
-# ggplot(subset(data_test, ClaimPerYear <= 15000)) +
-#   # geom_point(aes(x = ClaimPerYear, y = PredictedClaimPerYear0.5)) +
-#   # geom_errorbar(
-#   #   aes(x = IDpol, 
-#   #       ymin = PredictedClaimPerYear0.1, 
-#   #       ymax = PredictedClaimPerYear0.9), 
-#   #   width=.01)
-#   geom_ribbon(
-#     aes(
-#       ymin = PredictedClaimPerYear0.1, 
-#       ymax = PredictedClaimPerYear0.9,  
-#       x = IDpol, 
-#       fill = "band"), 
-#     alpha = 0.3) +
-#   geom_line(aes(x = IDpol, y = PredictedClaimPerYear0.5))
-# 
-
-# pred <- predict(mod, data_test, quantiles = c(0.1, 0.5, 0.9, 0.95), type = "quantiles")
-# pred$predictions
-# 
-# data_test$PredictedClaimPerYear0.1 = pred$predictions[, 1]
-# data_test$PredictedClaimPerYear0.5 = pred$predictions[, 2]
-# data_test$PredictedClaimPerYear0.9 = pred$predictions[, 3]
-# # data_test$PredictedClaimPerYear0.95 = pred$predictions[, 4]
-# 
-# #data_test$PredictedRange = abs(data_test$PredictedClaimPerYear0.9 - data_test$PredictedClaimPerYear0.1)
-# data_test$Error = abs(data_test$ClaimPerYear - data_test$PredictedClaimPerYear0.5)
-# # data_test = data_test %>% arrange(PredictedRange)
-# data_test$IDpol <- factor(data_test$IDpol, levels = unique(data_test$IDpol))
-# library(ggplot2)
-# 
-# # Evaluierung per Quantilsverlust (Pinball-Loss)
-# pinball_loss = function(quantile, response, prediction) {
-#   if (response >= prediction) {
-#     loss = quantile * abs(response - prediction)
-#   } else {
-#     loss = (1 - quantile) * abs(response - prediction)
-#   }
-#   return(loss)
-# }
-# 
-# loss_0.1 = 0
-# loss_0.5 = 0
-# loss_0.9 = 0
-# loss_0.95 = 0
-# 
-# baseline_loss_0.1 = 0
-# baseline_loss_0.5 = 0
-# baseline_loss_0.9 = 0
-# baseline_loss_0.95 = 0
-# 
-# for (i in 1:nrow(data_test)) {
-#   loss_0.1 = loss_0.1 + pinball_loss(0.1, data_test[i, "ClaimPerYear"], data_test[i, "PredictedClaimPerYear0.1"])
-#   loss_0.5 = loss_0.5 + pinball_loss(0.5, data_test[i, "ClaimPerYear"], data_test[i, "PredictedClaimPerYear0.5"])
-#   loss_0.9 = loss_0.9 + pinball_loss(0.9, data_test[i, "ClaimPerYear"], data_test[i, "PredictedClaimPerYear0.9"])
-#   loss_0.95 = loss_0.95 + pinball_loss(0.95, data_test[i, "ClaimPerYear"], data_test[i, "PredictedClaimPerYear0.95"])
-#   
-#   baseline_loss_0.1 = baseline_loss_0.1 + pinball_loss(0.1, data_test[i, "ClaimPerYear"], baseline_model_0.1)
-#   baseline_loss_0.5 = baseline_loss_0.5 + pinball_loss(0.5, data_test[i, "ClaimPerYear"], baseline_model_0.5)
-#   baseline_loss_0.9 = baseline_loss_0.9 + pinball_loss(0.9, data_test[i, "ClaimPerYear"], baseline_model_0.9)
-#   baseline_loss_0.95 = baseline_loss_0.95 + pinball_loss(0.95, data_test[i, "ClaimPerYear"], baseline_model_0.95)
-# }
-# 
-# loss_0.1 > baseline_loss_0.1
-# loss_0.5 > baseline_loss_0.5
-# loss_0.9 > baseline_loss_0.9
-# loss_0.95 > baseline_loss_0.95
-# 
-# D_squared_0.05 = 1 - ((loss_0.05)^2 / (baseline_loss_0.05)^2)
-# D_squared_0.5 = 1 - (loss_0.5 / baseline_loss_0.5)
-# D_squared_0.95 = 1 - (loss_0.95 / baseline_loss_0.95)
-# 
-# 
-# 
-# for (i in 1:nrow())
-# insurance_test$pinball_loss_0.05 = 
-# 
-# pinball_loss(0.9, insurance_test[10, ]$ClaimPerYear, insurance_test[10, ]$PredictedClaimPerYear0.5)
-# 
-# 
-# test_df = insurance_test[insurance_test$ClaimPerYear <= 4300, ]
-
-# 80% der Ansprüche fallen unter einen Betrag von 4300 EUR
-ggplot(data = insurance_test[insurance_test$ClaimPerYear <= 4300, ]) +
-  geom_errorbar(
-    aes(x = IDpol, 
-        ymin = PredictedClaimPerYear0.05, 
-        ymax = PredictedClaimPerYear0.95), 
-    width=.01,
-    position=position_dodge(.9), alpha = 0.7) +
-  geom_point(aes(x = IDpol, y = PredictedClaimPerYear0.5), color = "blue") 
-  # geom_point(aes(x = IDpol, y = ClaimPerYear), color = "black") 
-  # geom_point(aes(x = IDpol, y = Error, color = "red"))
-  
-sum(
-  (insurance_test$ClaimPerYear >= insurance_test$PredictedClaimPerYear0.05) & 
-  (insurance_test$ClaimPerYear <= insurance_test$PredictedClaimPerYear0.95)) / 
-  nrow(insurance_test)
-
-max(test_df$PredictedRange)
-# Training a model in mlr3
-insurance_task = mlr3::as_task_regr(
-  insurance_data, target = "ClaimPerYear", id = "insurance")
-
-splits = partition(insurance_task)
-lrn_rpart = lrn("regr.ranger")
-lrn_rpart$train(insurance_task, splits$train)
-
-insurance_train = insurance_data[splits$train, ]
-insurance_test = insurance_data[splits$test, ]
-
-insurance_data
-str(insurance_data)
-insurance_data$VehGas = as.factor(insurance_data$VehGas)
-
-insurance_data = insurance_data %>%
-  select(-c(TotalClaimAmount, Exposure))
-
-prediction = lrn_rpart$predict(insurance_task, splits$test)
-insurance_test$PredictedClaimPerYear = prediction$response
-
-prediction$score(msr("regr.mae"))
-
-ggplot(insurance_test) +
-  geom_point(aes(x = IDpol, y = abs(PredictedClaimPerYear - ClaimPerYear)))
-
+quantile(round(model_data$ClaimPerYear), probs = seq(0.1, 1, 0.05))
+dev.off()
+plot(density(model_data$ClaimPerYear))
 
 # mlr3 
 
-insurance_data$VehGas = as.factor(insurance_data$VehGas)
+model_data = model_data %>%
+  ungroup(IDpol) %>%
+  select(-c(IDpol))
 
-tsk_insurance = as_task_regr(insurance_data, target = "ClaimPerYear", id = "insurance")
+model_data$VehGas = as.factor(model_data$VehGas)
+model_data
+
+# library(cor)
+# # install.packages("lares")
+# library(lares)
+# corr_cross(model_data, # name of dataset
+#            max_pvalue = 0.05, # display only significant correlations (at 5% level)
+#            top = 10 # display top 10 couples of variables (by correlation coefficient)
+# )
+# corr_var(model_data, # name of dataset
+#          ClaimPerYear, # name of variable to focus on
+#          top = 5 # display top 5 correlations
+# ) 
+
+
+tsk_insurance = as_task_regr(model_data, target = "ClaimPerYear", id = "insurance")
 splits = partition(tsk_insurance)
-lrn_rpart = lrn("regr.rpart")
+library(mlr3learners)
+
+library(mlr3verse)
+learner_list = c(
+  lrn("regr.featureless"), 
+  lrn("regr.lm"), 
+  lrn("regr.rpart"),
+  lrn("regr.kknn"),
+  lrn("regr.svm"),
+  lrn("regr.ranger"))
+
+resamplings = rsmp("cv", folds = 3)
+# poe = po("encode", method = "one-hot")
+learner_list = lapply(learner_list, FUN = function(x) {po("encode") %>>% x})
+
+design = benchmark_grid(tsk_insurance, learner_list, resamplings)
+set.seed(123)
+bmr = benchmark(design)
+aggr = bmr$aggregate()
+aggr
+
+library("mlr3verse")
+
+# Nicht überraschend finden wir kein einziges passendes Modell; der reine Durchschnitt der Zielvariable
+# zeigt ähnliche Performance wie Bäume oder Random Forests
+
+library("mlr3verse")
+
 lrn_ranger = lrn("regr.ranger")
-lrn_featureless = lrn("regr.featureless")
-
-lrn_rpart$train(tsk_insurance, splits$train)
 lrn_ranger$train(tsk_insurance, splits$train)
-lrn_featureless$train(tsk_insurance, splits$train)
 
-pred_rpart = lrn_rpart$predict(tsk_insurance, splits$test)
 pred_ranger = lrn_ranger$predict(tsk_insurance, splits$test)
-pred_featureless = lrn_featureless$predict(tsk_insurance, splits$test)
-
-pred_rpart$score(msr("regr.mae"))
 pred_ranger$score(msr("regr.mae"))
-pred_featureless$score(msr("regr.mae"))
+
 
 insurance_test = insurance_data[splits$test, ]
-insurance_test$Prediction = pred_ranger$response
-
-ggplot(data = insurance_test, aes(x = ClaimPerYear, y = Prediction)) +
-  geom_point()
-
-# pareto
-library(evir)
-# install.packages("evir")
-?gpd
+insurance_test$PredictionRanger = pred_ranger$response
+insurance_test$PredictionRpart = pred_rpart$response
 
 
-
-gpd(
-  data_train, 
-  threshold = 200000,
-  method = "ml",
-  information = c("observed"))
-
+ggplot(data = insurance_test, aes(x = ClaimPerYear, y = PredictionRanger)) +
+  geom_point(size = 1, shape = 21, alpha = 0.5) +
+  # geom_abline(intercept = 0, slope = 1, linewidth = 0.5) +
+  theme_bw()
 
 # 
-install.packages("extRemes")
+
+# Wir entscheiden uns also die reine Zielvariable zu modellieren, ohne den Einfluss 
+# der gegebenen Features
+# Gehen wir also zurück zum initialen Extremwertmodell
+
+# Extreme value model
 library(extRemes)
-# Simulate normal
-# simnorm <- rnorm(length(retd), mean(retd), sd(retd))
-# Estimate generalized pareto distribution for the tail using Maximum Likelihood
-# I use 1.65 as a threshold
-pareto_fit <- fevd(
-  outlier_data$ClaimPerYear, 
-  threshold = min(outlier_data$ClaimPerYear),
-  type = "GP", use.phi= T, method = c("MLE"))
-# Estimate generalized pareto distribution for the left tail using Maximum Likelihood
-# tmp_threshold <- quantile(100*retd, .1) # set the Threshold
-# Estimate generalized pareto distribution for the right tail using Maximum Likelihood
-# tmpfit <- fevd(-100*retd, threshold= -tmp_threshold, type = "GP", use.phi= T, method = c("MLE"))
-# tmp_threshold <- quantile(100*retd, .9)  # set the Threshold
-# tmpfit <- fevd(100*retd, threshold= tmp_threshold, type = "GP", use.phi= T, method = c("MLE"))
 
+# insurance_df = insurance_data %>% 
+# ungroup(IDpol) %>%
+# select(-IDpol)
+# select(c(Area, VehPower, VehAge, DrivAge, BonusMalus, VehBrand, VehGas, Density, Region, ClaimPerYear))
+insurance_df = data.frame(insurance_data)
 
-plot(pareto_fit)
+threshold_vector = seq(5000, 1000000, 10000)
+AIC_vector = lapply(threshold_vector, FUN = function(i) {
+  fitGEV <- fevd(
+    ClaimPerYear, 
+    data = insurance_df,
+    type = "GP",
+    threshold = i)
+  return(2 * fitGEV$results$value + 2)}
+)
+AIC_vector
 
+# Ellbogenkriterium bezüglich AIC: Ab Threshold von 250.000 beginnt der Fit sich nur graduell zu verbessern
+dev.off()
+threshold_df = data.frame(threshold_vector, unlist(AIC_vector))
+ggplot(data.frame("threshold" = threshold_vector, "AIC" = unlist(AIC_vector))) +
+  geom_line(aes(x = threshold, y = AIC))
 
-
-library(extRemes)
-data(Fort)
-names(Fort)
-
-bmFort <- blockmaxxer(Fort, blocks = Fort$year, which="Prec")
-names(bmFort)
-
-plot(Fort$year, Fort$Prec, xlab = "Year",
-     ylab = "Precipitation (inches)",
-     cex = 1.25, cex.lab = 1.25,
-     col = "darkblue", bg = "lightblue", pch = 21)
-
-points(bmFort$year, bmFort$Prec, col="darkred", cex=1.5)
-
-# Fit a GEV distribution to annual maximum Precipitation
-# in Fort Collins, Colorado, U.S.A.
-fitGEV <- fevd(Prec, data = bmFort)
-fitGEV
+# Wir entscheiden uns für einen Extremwert-Threshold von 250000 EUR
+fitGEV <- fevd(
+  ClaimPerYear, 
+  data = insurance_df,
+  type = "GP",
+  threshold = 250000)
+dev.off()
+# Die empirischen Quantile stimmen sehr gut mit den theoretischen Quantilen überein
+# Die empirischen Quantile einer zusätzlichen, künstlichen Stichprobe (stochastisch!)
+# liegen sehr nahe an den empirischen Quantilen aus unseren Daten
 plot(fitGEV)
-plot(fitGEV, "trace")
+#
 
+# Nun fehlt noch die univariate Dichteschätzung unterhalb des Extremwertes
+
+claims_lower = model_data %>%
+  filter(ClaimPerYear < 250000) 
+
+# Wir sehen, dass keine typische Verteilung hier passen würde
+ggplot(claims_lower, aes(x = ClaimPerYear)) +
+  geom_density()
+
+install.packages("TDA")
+library("TDA")
+## Generate Data from the unit circle
+# n <- 300
+# X <- circleUnif(n)
+
+## Construct a grid of points over which we evaluate the function
+by <- 100
+Xseq <- seq(0, 20000, by = by)
+# Yseq <- seq(-1.7, 1.7, by = by)
+Grid <- expand.grid(Xseq, Yseq)
+
+## kernel density estimator
+k <- 50
+KNN <- knnDE(X, Grid, k)
+
+
+set.seed(7)
+fit.knn <- train(Species~., data=train, method="knn",
+                 metric=metric ,trControl=trainControl)
+knn.k1 <- fit.knn$bestTune # keep this Initial k for testing with knn() function in next section
+print(fit.knn)
+
+
+claims_lower = claims_lower$ClaimPerYear
+
+library(gamlss)
+fit <- fitDist(claims_lower, k = 2, type = "realplus", trace = FALSE, try.gamlss = TRUE)
+fit
+summary(fit)
+plot(fit)
+# descdist(claims_lower, discrete = FALSE)
+# It seems our data can be described by a beta distribution
+
+fit.beta <- fitdist(claims_lower, "beta")
+
+
+fit.norm <- fitdist(x, "norm")
+
+ggplot(claims_medium, aes(x = ClaimPerYear)) +
+  geom_density()

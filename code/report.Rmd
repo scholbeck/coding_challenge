@@ -1,0 +1,270 @@
+---
+title: "huk_coding_challenge"
+output: html_document
+date: "2024-05-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Pakete laden
+```{r, echo = TRUE, message=FALSE, output = FALSE}
+library(farff)
+library(dplyr)
+library(mlr3verse)
+library(ggplot2)
+library(lares)
+library(extRemes)
+```
+
+## Daten einlesen 
+
+```{r, echo = TRUE, output = FALSE, message = FALSE}
+
+# .arff einlesen
+freq_data = readARFF("../datasets/freMTPL2freq.arff")
+sev_data = readARFF("../datasets/freMTPL2sev.arff")
+
+# join anhand von IDpol; behalte alle Beobachtungen mit Versicherungsanspruch
+joined_data = right_join(freq_data, sev_data, by = join_by(IDpol == IDpol))
+joined_data = joined_data[complete.cases(joined_data), ]
+```
+
+## Daten aufbereiten
+
+- Berechne zunächst den gesamten Versicherungsanspruch je Kunden
+
+```{r}
+total_claim_amount = joined_data %>%
+  group_by(IDpol) %>%
+  summarise(TotalClaimAmount = sum(ClaimAmount)) %>%
+  select(IDpol, TotalClaimAmount)
+```
+
+- Behalte jeweils einen Feature-Vektor je Kunden und join mit gesamten Versicherungsanspruch
+- Erstelle Zielvariable als gesamter Versicherungsanspruch durch Versicherungszeitraum in Jahren (TotalClaimAmount / Exposure)
+- Entferne redundante Bestandteile der Zielvariablen (TotalClaimAmount, Exposure)
+- Entferne redundante Feature (Density, Region)
+- Entferne nicht benötigte Feature (ClaimNb, IDpol)
+
+```{r }
+
+insurance_data = joined_data %>%
+  group_by(IDpol) %>%
+  filter(row_number() == 1) %>%
+  ungroup(IDpol) %>%
+  select(-ClaimAmount) %>%
+  full_join(total_claim_amount, by = join_by(IDpol)) %>%
+  mutate(ClaimPerYear = TotalClaimAmount / Exposure) %>%
+  select(-c(TotalClaimAmount, Exposure, ClaimNb, Density, Region, IDpol)) %>%
+  mutate(VehGas = as.factor(VehGas))
+```
+
+
+## Explorative Analyse
+
+- Boxplot der Zielvariable zeigt einige extreme Ausreißer.
+
+```{r}
+ggplot(insurance_data, aes(x = ClaimPerYear)) +
+  geom_boxplot() +
+  theme_bw()
+```
+
+- Interquartilsabstand (25% bis 75% Quantil) beträgt jedoch nur 2224 EUR.
+- Der höchste Versicherungsanspruch eines Kunden pro Jahr beträgt ganze 18.524.548 EUR.
+- 90% aller Kunden nehmen Ansprüche von unter 9208 EUR pro Jahr in Anspruch.
+
+```{r}
+IQR(insurance_data$ClaimPerYear)
+range(insurance_data$ClaimPerYear)
+quantile(round(insurance_data$ClaimPerYear), probs = seq(0, 1, 0.05))
+```
+
+- **Aufgrund der zentralen Bedeutung von hohen Versicherungsansprüchen für die Versicherungsgesellschaft können wir die Ausreißer hier NICHT entfernen. Diese sollten unbedingt mitmodelliert werden.**
+- Gehen wir nun zur deskriptiven Zusammenhangsanalyse über.
+- Innerhalb der erklärenden Variablen finden sich diverse Korrelationen, beispielsweise zwischen Alter des Fahrers und des Schadenfreiheitsrabattes, sowie zwischen Merkmalen des Fahrzeuges.
+
+```{r echo = TRUE, message = FALSE, results = 'hide', fig.keep = 'all', warning=FALSE}
+corr_cross(insurance_data, # name of dataset
+           max_pvalue = 0.05, # display only significant correlations (at 5% level)
+           top = 10 # display top 10 couples of variables (by correlation coefficient)
+)
+```
+
+- Zwischen der Zielvariable und den erklärenden Variablen finden sich extrem schwache Assoziationen. 
+- Die höchste lineare Korrelation mit der Zielvariable hat das Alter des Fahrers, jedoch nur mit 2%.
+
+```{r message = FALSE}
+corr_var(insurance_data, # name of dataset
+         ClaimPerYear, # name of variable to focus on
+         top = 5 # display top 5 correlations
+) 
+```
+
+```{r echo = TRUE, message = FALSE, results = 'hide',}
+feature_pred = x2y(insurance_data)
+```
+
+```{r}
+plot(feature_pred)
+```
+
+- **Fazit:** Zwar lassen lineare Korrelationen nicht ausschließen, dass es nichtlineare Zusammenhänge gibt, jedoch sind die vorhanden linearen Assoziationen nicht sehr vielversprechend für ein zu trainierendes Modell, welches einen multivariaten Zusammenhang beschreibt.
+
+
+## Modellierung
+
+- Aufgrund der extrem rechtsschiefen Verteilung der Zielvariablen bietet sich eine Modellierung des Verteilungsrandes per Extremwertverteilung an (heavy Tail)
+- Eine Möglichkeit ist eine generalisierte Paretoverteilung, um den Rand der Zielvariablen zu beschreiben.
+- Hierzu wird eine Grenze (Threshold) benötigt, ab der ein Wert als zum Rand zugehörig modelliert wird.
+- Im Folgenden wird iterativ getestet, welches Akaike-Information-Criterion (AIC) mit welcher Grenze assoziiert ist.
+
+
+```{r}
+
+insurance_df = data.frame(insurance_data)
+threshold_vector = seq(5000, 1000000, 10000)
+AIC_vector = lapply(threshold_vector, FUN = function(i) {
+  fitGEV <- fevd(
+    ClaimPerYear, 
+    data = insurance_df,
+    type = "GP",
+    threshold = i)
+  return(2 * fitGEV$results$value + 2)}
+)
+```
+
+- Ich benutze eine Heuristik im Sinne eines Ellbogenkriteriums bezüglich AIC: Ab Threshold von 250.000 beginnt der Fit sich nur graduell zu verbessern.
+
+```{r}
+threshold_df = data.frame(threshold_vector, unlist(AIC_vector))
+ggplot(data.frame("threshold" = threshold_vector, "AIC" = unlist(AIC_vector))) +
+  geom_line(aes(x = threshold, y = AIC)) +
+  theme_bw()
+```
+
+- Die Grenze von 250000 EUR wird zur Schätzung der finalen Paretoverteilung benutzt
+
+```{r}
+pareto <- fevd(
+  ClaimPerYear, 
+  data = insurance_df,
+  type = "GP",
+  threshold = 250000)
+pareto
+```
+
+- Die empirischen Quantile stimmen sehr gut mit den theoretischen Quantilen überein
+- Die empirischen Quantile einer zusätzlichen, künstlichen Stichprobe (stochastisch!) liegen sehr nahe an den empirischen Quantilen aus unseren Daten.
+
+```{r}
+set.seed(12)
+plot(pareto)
+```
+
+- Für Ansprüche kleiner als 250.000 EUR wird nun zunächst ein herkömmliches Modell via mlr3 trainiert.
+- Hierzu wird ein Benchmark von 6 Learnern erstellt (3-fach Kreuzvalidierung sowie One-Hot-Encoding kategorieller Features).
+
+```{r}
+
+model_data = insurance_data %>% filter(ClaimPerYear <= 250000)
+quantile(round(model_data$ClaimPerYear), probs = seq(0.1, 1, 0.05))
+
+model_data$VehGas = as.factor(model_data$VehGas)
+model_data
+
+tsk_insurance = as_task_regr(model_data, target = "ClaimPerYear", id = "insurance")
+splits = partition(tsk_insurance)
+
+learner_list = c(
+  lrn("regr.featureless"), 
+  lrn("regr.lm"), 
+  lrn("regr.rpart"),
+  lrn("regr.kknn"),
+  lrn("regr.svm"),
+  lrn("regr.ranger"))
+
+resamplings = rsmp("cv", folds = 3)
+learner_list = lapply(learner_list, FUN = function(x) {po("encode") %>>% x})
+
+design = benchmark_grid(tsk_insurance, learner_list, resamplings)
+set.seed(123)
+bmr = benchmark(design)
+aggr = bmr$aggregate()
+aggr
+```
+
+- Nicht überraschend finden wir kein einziges passendes Modell; der reine Durchschnitt der Zielvariable als Baseline zeigt eine ähnliche Performance wie Bäume oder Random Forests!
+- Als Illustration dient das lineare Modell mit allen Features, welches ähnlich wie alle anderen Modelle abschneidet: Wir verzeichnen extrem hohe Residuen.
+
+```{r}
+learner = lrn("regr.lm")
+learner$train(tsk_insurance, splits$train)
+predictions = learner$predict(tsk_insurance, splits$test)
+
+ggplot(predictions, aes(x = row_ids, y = abs(response - truth))) +
+  geom_point() +
+  theme_bw() +
+  xlab("Beobachtung") +
+  ylab("Absolutes Residuum")
+```
+
+
+- Ich schlussfolgere, dass die Schätzung einer bedingten Dichte aufgrund fehlender Zusammenhänge hier nicht zum Ziel führt.
+- Es verbleibt die Möglichkeit, die marginale Dichte der Zielvariable zu modellieren; auch deshalb, weil für unsere Extremwerterteilung > 250.000 EUR eine passende theoretische Verteilung gefunden werden konnte.
+- Betrachten wir zunächst die empirische, marginale Verteilung der Zielvariable.
+
+```{r} 
+claims_lower = model_data %>%
+  filter(ClaimPerYear < 250000)
+ 
+ggplot(claims_lower, aes(x = ClaimPerYear)) +
+  geom_density() +
+  theme_bw()
+```
+
+- Aufgrund der großen Datenmenge können wir hier auch auf eine empirische CDF zurückgreifen.
+- Hierbei lässt sich anhand des abgefragten Quantils eine Wahrscheinlichkeit ableiten.
+
+```{r}
+find_empirical_dist = function(x) {
+  n = length(x)
+  sorted_x = sort(x)
+  cumsum_frac = seq(1:n) / n
+  emp_dist = data.frame(x = sorted_x, y = cumsum_frac)
+  return(emp_dist)
+}
+
+empiricalProb = function(quantile, dist) {
+  return(sum(dist$x <= quantile) / nrow(dist))
+}
+```
+
+- Beispiel: Die Wahrscheinlichkeit, dass ein Kunde pro Jahr einen Versicherungsanspruch zwischen 3000 und 4000 EUR besitzt beträgt etwa 6%.
+
+```{r}
+emp_dist = find_empirical_dist(model_data$ClaimPerYear)
+empiricalProb(4000, emp_dist) - empiricalProb(3000, emp_dist)
+
+```
+
+- Für die Wahrscheinlichkeiten für einen Versicherungsanspruch je Kunde je Jahr haben wir nun ein gemischtes Model (Mixture Model) mit geschätzten a-priori Wahrscheinlichkeiten von 99.5% und 0.5%.
+
+```{r}
+p = nrow(claims_lower) / nrow(insurance_data)
+p
+```
+
+```{=latex}
+\begin{equation}
+\mathbb{P}(\text{ClaimPerYear} = x) = 
+    0.995 \cdot \mathbb{P}_{\text{empirisch}}(x) + 0.005 \cdot \mathbb{P}_{\text{Pareto}}(x)
+\end{equation}
+```
+
+- Versicherungstechnisch können wir nun erwartete Verluste auf die Kunden umlegen.
+- Da einzelnen Kundenmerkmale keine Vorhersagekraft bieten, können wir (noch) nicht zwischen Kunden preislich diskriminieren.
+- Hierzu sollten zusätzliche Kundenmerkmale eingeholt werden. Ausreichend Datenpunkte sind bereits vorhanden, d.h. mehr Daten der gleichen Art zu sammeln, wird keine Verbesserung unsererer Modelle liefern.
+- Darüber hinaus können wir die Mischverteilung noch optimieren: Schätzung theoretischer Verteilungen für normale Werte, mehr Komponenten in der Mischverteilung oder weitere Optimierung der Threshold.

@@ -62,6 +62,7 @@ corr_cross(insurance_data, # name of dataset
 # jedoch sind die vorhanden linearen Assoziationen nicht sehr vielversprechend für ein zu trainierendes Modell
 
 # Die höchste lineare Korrelation mit der Zielvariable hat das Alter des Fahrers, jedoch nur mit 2%.
+# Dies lässt vermuten, dass die Findung einer multivariaten Verteilung hier schwierig sein sollte.
 corr_var(insurance_data, # name of dataset
          ClaimPerYear, # name of variable to focus on
          top = 5 # display top 5 correlations
@@ -69,24 +70,93 @@ corr_var(insurance_data, # name of dataset
 
 feature_pred = x2y(insurance_data)
 plot(feature_pred)
+
+
+dev.off()
+# Die empirischen Quantile stimmen sehr gut mit den theoretischen Quantilen überein
+# Die empirischen Quantile einer zusätzlichen, künstlichen Stichprobe (stochastisch!)
+# liegen sehr nahe an den empirischen Quantilen aus unseren Daten
+# plot(fitGEV)
+
 # library(h2o)
 # lasso_vars(insurance_data,
 #            ClaimPerYear)
 
+# Extreme value model
+library(extRemes)
 
-# Für Ansprüche kleiner als 20000 EUR trainieren wir ein herkömmliches Modell
+# insurance_df = insurance_data %>% 
+# ungroup(IDpol) %>%
+# select(-IDpol)
+# select(c(Area, VehPower, VehAge, DrivAge, BonusMalus, VehBrand, VehGas, Density, Region, ClaimPerYear))
+insurance_df = data.frame(insurance_data)
 
-model_data = insurance_data %>% filter(ClaimPerYear <= 25000)
+threshold_vector = seq(5000, 1000000, 10000)
+AIC_vector = lapply(threshold_vector, FUN = function(i) {
+  fitGEV <- fevd(
+    ClaimPerYear, 
+    data = insurance_df,
+    type = "GP",
+    threshold = i)
+  return(2 * fitGEV$results$value + 2)}
+)
+AIC_vector
+
+# Ellbogenkriterium bezüglich AIC: Ab Threshold von 250.000 beginnt der Fit sich nur graduell zu verbessern
+dev.off()
+threshold_df = data.frame(threshold_vector, unlist(AIC_vector))
+ggplot(data.frame("threshold" = threshold_vector, "AIC" = unlist(AIC_vector))) +
+  geom_line(aes(x = threshold, y = AIC))
+
+# Wir entscheiden uns für einen Extremwert-Threshold von 250000 EUR
+fitGEV <- fevd(
+  ClaimPerYear, 
+  data = insurance_df,
+  type = "GP",
+  threshold = 250000)
+dev.off()
+
+fitGEV
+# Die empirischen Quantile stimmen sehr gut mit den theoretischen Quantilen überein
+# Die empirischen Quantile einer zusätzlichen, künstlichen Stichprobe (stochastisch!)
+# liegen sehr nahe an den empirischen Quantilen aus unseren Daten
+set.seed(12)
+plot(fitGEV)
+
+
+find_empirical_dist = function(x) {
+  n = length(x)
+  sorted_x = sort(x)
+  cumsum_frac = seq(1:n) / n
+  emp_dist = data.frame(x = sorted_x, y = cumsum_frac)
+  return(emp_dist)
+}
+
+empiricalProb = function(quantile, dist) {
+  return(sum(dist$x <= quantile) / nrow(dist))
+}
+
+emp_dist = find_empirical_dist(model_data$ClaimPerYear)
+empiricalProb(5000, emp_dist)
+
+
+# Für Ansprüche kleiner als 25000 EUR trainieren wir ein herkömmliches Modell
+
+model_data = insurance_data %>% filter(ClaimPerYear <= 250000)
+
+library(gamlss)
+?gamlss
+gamlssNP("ClaimPerYear ~ .")
 
 quantile(round(model_data$ClaimPerYear), probs = seq(0.1, 1, 0.05))
 dev.off()
-plot(density(model_data$ClaimPerYear))
+plot(hist(model_data$ClaimPerYear))
 
 # mlr3 
 
-model_data = model_data %>%
-  ungroup(IDpol) %>%
-  select(-c(IDpol))
+# model_data = model_data %>%
+  # ungroup(IDpol) %>%
+  # select(-c(IDpol))
 
 model_data$VehGas = as.factor(model_data$VehGas)
 model_data
@@ -131,118 +201,99 @@ library("mlr3verse")
 
 # Nicht überraschend finden wir kein einziges passendes Modell; der reine Durchschnitt der Zielvariable
 # zeigt ähnliche Performance wie Bäume oder Random Forests
-
-library("mlr3verse")
-
-lrn_ranger = lrn("regr.ranger")
-lrn_ranger$train(tsk_insurance, splits$train)
-
-pred_ranger = lrn_ranger$predict(tsk_insurance, splits$test)
-pred_ranger$score(msr("regr.mae"))
-
-
-insurance_test = insurance_data[splits$test, ]
-insurance_test$PredictionRanger = pred_ranger$response
-insurance_test$PredictionRpart = pred_rpart$response
-
-
-ggplot(data = insurance_test, aes(x = ClaimPerYear, y = PredictionRanger)) +
-  geom_point(size = 1, shape = 21, alpha = 0.5) +
-  # geom_abline(intercept = 0, slope = 1, linewidth = 0.5) +
-  theme_bw()
+# Ich schlussfolgere, dass die Schätzung einer multivariate Verteilung hier nicht zum Ziel führt
+# Es verbleibt die Möglichkeit, die marginale Dichte der Zielvariable zu modellieren; auch deshalb, weil
+# für unsere Extremwerterteilung > 250.000 EUR eine passende theoretische Verteilung gefunden werden konnte.
 
 # 
-
-# Wir entscheiden uns also die reine Zielvariable zu modellieren, ohne den Einfluss 
-# der gegebenen Features
-# Gehen wir also zurück zum initialen Extremwertmodell
-
-# Extreme value model
-library(extRemes)
-
-# insurance_df = insurance_data %>% 
-# ungroup(IDpol) %>%
-# select(-IDpol)
-# select(c(Area, VehPower, VehAge, DrivAge, BonusMalus, VehBrand, VehGas, Density, Region, ClaimPerYear))
-insurance_df = data.frame(insurance_data)
-
-threshold_vector = seq(5000, 1000000, 10000)
-AIC_vector = lapply(threshold_vector, FUN = function(i) {
-  fitGEV <- fevd(
-    ClaimPerYear, 
-    data = insurance_df,
-    type = "GP",
-    threshold = i)
-  return(2 * fitGEV$results$value + 2)}
-)
-AIC_vector
-
-# Ellbogenkriterium bezüglich AIC: Ab Threshold von 250.000 beginnt der Fit sich nur graduell zu verbessern
-dev.off()
-threshold_df = data.frame(threshold_vector, unlist(AIC_vector))
-ggplot(data.frame("threshold" = threshold_vector, "AIC" = unlist(AIC_vector))) +
-  geom_line(aes(x = threshold, y = AIC))
-
-# Wir entscheiden uns für einen Extremwert-Threshold von 250000 EUR
-fitGEV <- fevd(
-  ClaimPerYear, 
-  data = insurance_df,
-  type = "GP",
-  threshold = 250000)
-dev.off()
-# Die empirischen Quantile stimmen sehr gut mit den theoretischen Quantilen überein
-# Die empirischen Quantile einer zusätzlichen, künstlichen Stichprobe (stochastisch!)
-# liegen sehr nahe an den empirischen Quantilen aus unseren Daten
-plot(fitGEV)
-#
-
-# Nun fehlt noch die univariate Dichteschätzung unterhalb des Extremwertes
-
-claims_lower = model_data %>%
-  filter(ClaimPerYear < 250000) 
-
-# Wir sehen, dass keine typische Verteilung hier passen würde
-ggplot(claims_lower, aes(x = ClaimPerYear)) +
-  geom_density()
-
-install.packages("TDA")
-library("TDA")
-## Generate Data from the unit circle
-# n <- 300
-# X <- circleUnif(n)
-
-## Construct a grid of points over which we evaluate the function
-by <- 100
-Xseq <- seq(0, 20000, by = by)
-# Yseq <- seq(-1.7, 1.7, by = by)
-Grid <- expand.grid(Xseq, Yseq)
-
-## kernel density estimator
-k <- 50
-KNN <- knnDE(X, Grid, k)
-
-
-set.seed(7)
-fit.knn <- train(Species~., data=train, method="knn",
-                 metric=metric ,trControl=trainControl)
-knn.k1 <- fit.knn$bestTune # keep this Initial k for testing with knn() function in next section
-print(fit.knn)
-
-
-claims_lower = claims_lower$ClaimPerYear
-
-library(gamlss)
-fit <- fitDist(claims_lower, k = 2, type = "realplus", trace = FALSE, try.gamlss = TRUE)
-fit
-summary(fit)
-plot(fit)
-# descdist(claims_lower, discrete = FALSE)
-# It seems our data can be described by a beta distribution
-
-fit.beta <- fitdist(claims_lower, "beta")
-
-
-fit.norm <- fitdist(x, "norm")
-
-ggplot(claims_medium, aes(x = ClaimPerYear)) +
-  geom_density()
+# # Nun fehlt noch die univariate Dichteschätzung unterhalb des Extremwertes
+# 
+# claims_lower = model_data %>%
+#   filter(ClaimPerYear < 250000) 
+# 
+# # Wir sehen, dass die Verteilung immer noch sehr stark rechtschief ist
+# ggplot(claims_lower, aes(x = ClaimPerYear)) +
+#   geom_density() +
+#   theme_bw()
+# 
+# # Sehen wir uns noch einmal die Quantile der marginalen Verteilung an
+# quantile(claims_lower$ClaimPerYear, probs = seq(0, 1, 0.1))
+# # Ganze 90% der Daten befinden sich im Intervall von EUR bis 8677 EUR Schadensansprüchen
+# 
+# 
+# # Wir partitionieren die Daten wiederum in einen mittleren und einen niedrigen Anteil
+# library(fitdistrplus)
+# claims_medium = model_data %>%
+#   filter(ClaimPerYear < 250000) 
+# # Die Verteilung hat zwar einen "heavy Tail", sollte jedoch leichter zu modellieren sein
+# ggplot(claims_medium, aes(x = ClaimPerYear)) +
+#   geom_density() +
+#   theme_bw()
+# 
+# descdist(model_data$ClaimPerYear, discrete = FALSE)
+# fit.weibull <- fitdist(claims_medium$ClaimPerYear, "beta")
+# 
+# # Wir entscheiden uns für einen Extremwert-Threshold von 250000 EUR
+# fitGEV <- fevd(
+#   ClaimPerYear, 
+#   data = insurance_df,
+#   type = "GP",
+#   threshold = 10000)
+# fitGEV
+# dev.off()
+# # Die empirischen Quantile stimmen sehr gut mit den theoretischen Quantilen überein
+# # Die empirischen Quantile einer zusätzlichen, künstlichen Stichprobe (stochastisch!)
+# # liegen sehr nahe an den empirischen Quantilen aus unseren Daten
+# plot(fitGEV)
+# # 
+# # # 
+# # claims_lower = model_data %>%
+# #   filter(ClaimPerYear < 9000) 
+# # 
+# # # Wir sehen, dass die Verteilung immer noch sehr stark rechtschief ist
+# # ggplot(claims_lower, aes(x = ClaimPerYear)) +
+# #   geom_density() +
+# #   theme_bw()
+# # 
+# # 
+# # install.packages("TDA")
+# # library("TDA")
+# # ## Generate Data from the unit circle
+# # # n <- 300
+# # # X <- circleUnif(n)
+# # 
+# # ## Construct a grid of points over which we evaluate the function
+# # by <- 100
+# # Xseq <- seq(0, 20000, by = by)
+# # # Yseq <- seq(-1.7, 1.7, by = by)
+# # Grid <- expand.grid(Xseq, Yseq)
+# # 
+# # ## kernel density estimator
+# # k <- 50
+# # KNN <- knnDE(X, Grid, k)
+# # 
+# # 
+# # set.seed(7)
+# # fit.knn <- train(Species~., data=train, method="knn",
+# #                  metric=metric ,trControl=trainControl)
+# # knn.k1 <- fit.knn$bestTune # keep this Initial k for testing with knn() function in next section
+# # print(fit.knn)
+# # 
+# # 
+# # claims_lower = claims_lower$ClaimPerYear
+# # 
+# # library(gamlss)
+# # fit <- fitDist(claims_lower, k = 2, type = "realplus", trace = FALSE, try.gamlss = TRUE)
+# fit
+# summary(fit)
+# plot(fit)
+# # descdist(claims_lower, discrete = FALSE)
+# # It seems our data can be described by a beta distribution
+# 
+# fit.beta <- fitdist(claims_lower, "beta")
+# 
+# 
+# fit.norm <- fitdist(x, "norm")
+# 
+# ggplot(claims_medium, aes(x = ClaimPerYear)) +
+#   geom_density()

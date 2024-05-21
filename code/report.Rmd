@@ -1,5 +1,5 @@
 ---
-title: "huk_coding_challenge"
+title: "HUK Coding Challenge"
 output: html_document
 date: "2024-05-20"
 ---
@@ -11,11 +11,12 @@ knitr::opts_chunk$set(echo = TRUE)
 ## Pakete laden
 ```{r, echo = TRUE, message=FALSE, output = FALSE}
 library(farff)
-library(dplyr)
+library(tidyverse)
 library(mlr3verse)
 library(ggplot2)
 library(lares)
 library(extRemes)
+library(DataExplorer)
 ```
 
 ## Daten einlesen 
@@ -33,7 +34,7 @@ joined_data = joined_data[complete.cases(joined_data), ]
 
 ## Daten aufbereiten
 
-- Berechne zunächst den gesamten Versicherungsanspruch je Kunden
+- Berechne zunächst den gesamten Versicherungsanspruch je Kunden.
 
 ```{r}
 total_claim_amount = joined_data %>%
@@ -42,14 +43,17 @@ total_claim_amount = joined_data %>%
   select(IDpol, TotalClaimAmount)
 ```
 
-- Behalte jeweils einen Feature-Vektor je Kunden und join mit gesamten Versicherungsanspruch
-- Erstelle Zielvariable als gesamter Versicherungsanspruch durch Versicherungszeitraum in Jahren (TotalClaimAmount / Exposure)
-- Entferne redundante Bestandteile der Zielvariablen (TotalClaimAmount, Exposure)
-- Entferne redundante Feature (Density, Region)
-- Entferne nicht benötigte Feature (ClaimNb, IDpol)
+- Behalte jeweils einen Feature-Vektor je Kunden (alle identisch) und join mit gesamten Versicherungsanspruch.
+
+- Erstelle Zielvariable als gesamter Versicherungsanspruch durch Versicherungszeitraum in Jahren (TotalClaimAmount / Exposure).
+
+- Entferne redundante Bestandteile der Zielvariablen (TotalClaimAmount, Exposure).
+
+- Entferne redundante Feature (Density, Region).
+
+- Entferne nicht benötigte Feature (ClaimNb, IDpol).
 
 ```{r }
-
 insurance_data = joined_data %>%
   group_by(IDpol) %>%
   filter(row_number() == 1) %>%
@@ -64,6 +68,10 @@ insurance_data = joined_data %>%
 
 ## Explorative Analyse
 
+```{r}
+plot_intro(insurance_data)
+```
+
 - Boxplot der Zielvariable zeigt einige extreme Ausreißer.
 
 ```{r}
@@ -73,7 +81,9 @@ ggplot(insurance_data, aes(x = ClaimPerYear)) +
 ```
 
 - Interquartilsabstand (25% bis 75% Quantil) beträgt jedoch nur 2224 EUR.
+
 - Der höchste Versicherungsanspruch eines Kunden pro Jahr beträgt ganze 18.524.548 EUR.
+
 - 90% aller Kunden nehmen Ansprüche von unter 9208 EUR pro Jahr in Anspruch.
 
 ```{r}
@@ -83,7 +93,9 @@ quantile(round(insurance_data$ClaimPerYear), probs = seq(0, 1, 0.05))
 ```
 
 - **Aufgrund der zentralen Bedeutung von hohen Versicherungsansprüchen für die Versicherungsgesellschaft können wir die Ausreißer hier NICHT entfernen. Diese sollten unbedingt mitmodelliert werden.**
+
 - Gehen wir nun zur deskriptiven Zusammenhangsanalyse über.
+
 - Innerhalb der erklärenden Variablen finden sich diverse Korrelationen, beispielsweise zwischen Alter des Fahrers und des Schadenfreiheitsrabattes, sowie zwischen Merkmalen des Fahrzeuges.
 
 ```{r echo = TRUE, message = FALSE, results = 'hide', fig.keep = 'all', warning=FALSE}
@@ -94,6 +106,7 @@ corr_cross(insurance_data, # name of dataset
 ```
 
 - Zwischen der Zielvariable und den erklärenden Variablen finden sich extrem schwache Assoziationen. 
+
 - Die höchste lineare Korrelation mit der Zielvariable hat das Alter des Fahrers, jedoch nur mit 2%.
 
 ```{r message = FALSE}
@@ -111,14 +124,19 @@ feature_pred = x2y(insurance_data)
 plot(feature_pred)
 ```
 
-- **Fazit:** Zwar lassen lineare Korrelationen nicht ausschließen, dass es nichtlineare Zusammenhänge gibt, jedoch sind die vorhanden linearen Assoziationen nicht sehr vielversprechend für ein zu trainierendes Modell, welches einen multivariaten Zusammenhang beschreibt.
+- **Fazit:** Zwar lassen lineare Korrelationen nicht ausschließen, dass es nichtlineare Zusammenhänge gibt, jedoch sind die vorhandenen linearen Assoziationen nicht sehr vielversprechend für ein zu trainierendes Modell, welches einen multivariaten Zusammenhang beschreibt.
 
 
 ## Modellierung
 
-- Aufgrund der extrem rechtsschiefen Verteilung der Zielvariablen bietet sich eine Modellierung des Verteilungsrandes per Extremwertverteilung an (heavy Tail)
+### Extremwerte der Versicherungsansprüche
+
+- Aufgrund der extrem rechtsschiefen Verteilung der Zielvariablen bietet sich eine Modellierung des Verteilungsrandes (mit sehr wenigen Werten) per Extremwertverteilung an (heavy Tail).
+
 - Eine Möglichkeit ist eine generalisierte Paretoverteilung, um den Rand der Zielvariablen zu beschreiben.
+
 - Hierzu wird eine Grenze (Threshold) benötigt, ab der ein Wert als zum Rand zugehörig modelliert wird.
+
 - Im Folgenden wird iterativ getestet, welches Akaike-Information-Criterion (AIC) mit welcher Grenze assoziiert ist.
 
 
@@ -145,7 +163,7 @@ ggplot(data.frame("threshold" = threshold_vector, "AIC" = unlist(AIC_vector))) +
   theme_bw()
 ```
 
-- Die Grenze von 250000 EUR wird zur Schätzung der finalen Paretoverteilung benutzt
+- Die Grenze von 250000 EUR wird zur Schätzung der finalen Paretoverteilung benutzt.
 
 ```{r}
 pareto <- fevd(
@@ -156,7 +174,8 @@ pareto <- fevd(
 pareto
 ```
 
-- Die empirischen Quantile stimmen sehr gut mit den theoretischen Quantilen überein
+- Die empirischen Quantile stimmen sehr gut mit den theoretischen Quantilen überein.
+
 - Die empirischen Quantile einer zusätzlichen, künstlichen Stichprobe (stochastisch!) liegen sehr nahe an den empirischen Quantilen aus unseren Daten.
 
 ```{r}
@@ -164,10 +183,19 @@ set.seed(12)
 plot(pareto)
 ```
 
-- Für Ansprüche kleiner als 250.000 EUR wird nun zunächst ein herkömmliches Modell via mlr3 trainiert.
-- Hierzu wird ein Benchmark von 6 Learnern erstellt (3-fach Kreuzvalidierung sowie One-Hot-Encoding kategorieller Features).
+### "Reguläre" Werte der Versicherungsansprüche
 
-```{r}
+- Für Ansprüche kleiner als 250.000 EUR werden nun mehrere Regressionsmodelle via mlr3 trainiert.
+
+- Ein Modell ohne Features (Durchschnitt) und ein lineares Modell mit allen Features wird als Baseline zur Referenz trainiert. Darüber hinaus trainieren wir einen Regressionsbaum (CART), ein k-nearest-Neighbor-Modell mit 7 Nachbarpunkten, eine Support Vector Machine, sowie einen Random Forest.
+
+- Hierzu wird ein Benchmark von 6 Learnern erstellt (5-fach Kreuzvalidierung sowie One-Hot-Encoding kategorieller Features).
+
+- Zur Illustration wird der Komplexitätsparameter bei rpart innerhalb des Benchmarks getuned.
+
+- Auf eine aufwendige Hyperparameteroptimierung wird verzichtet, um den Rechenaufwand zu begrenzen. Darüber hinaus sollte ein Random Forest auch ohne Tuning passable Performance zeigen.
+
+```{r, message = FALSE, results='hide'}
 
 model_data = insurance_data %>% filter(ClaimPerYear <= 250000)
 quantile(round(model_data$ClaimPerYear), probs = seq(0.1, 1, 0.05))
@@ -178,42 +206,61 @@ model_data
 tsk_insurance = as_task_regr(model_data, target = "ClaimPerYear", id = "insurance")
 splits = partition(tsk_insurance)
 
+# Auto Tuner für CART
+
+at_rpart = auto_tuner(
+  tuner = tnr("random_search"),
+  learner = lrn("regr.rpart",
+                cp = to_tune(1e-04, 1e-1, logscale = TRUE)),
+  resampling = rsmp ("holdout"),
+  measure = msr("regr.mse"),
+  term_evals = 3)
+
 learner_list = c(
   lrn("regr.featureless"), 
   lrn("regr.lm"), 
-  lrn("regr.rpart"),
+  at_rpart,
   lrn("regr.kknn"),
   lrn("regr.svm"),
   lrn("regr.ranger"))
 
-resamplings = rsmp("cv", folds = 3)
+resamplings = rsmp("cv", folds = 5)
 learner_list = lapply(learner_list, FUN = function(x) {po("encode") %>>% x})
-
 design = benchmark_grid(tsk_insurance, learner_list, resamplings)
-set.seed(123)
 bmr = benchmark(design)
+```
+
+```{r}
 aggr = bmr$aggregate()
 aggr
 ```
 
-- Nicht überraschend finden wir kein einziges passendes Modell; der reine Durchschnitt der Zielvariable als Baseline zeigt eine ähnliche Performance wie Bäume oder Random Forests!
-- Als Illustration dient das lineare Modell mit allen Features, welches ähnlich wie alle anderen Modelle abschneidet: Wir verzeichnen extrem hohe Residuen.
+- Nicht überraschend finden wir kein einziges passendes Modell; der reine Durchschnitt der Zielvariable als Baseline zeigt eine ähnliche Performance wie CART oder ein Random Forest!
+
+- Als Illustration dient die Vorhersage des linearen Modells mit allen Features auf ungesehenen Testdaten, welches ähnlich wie alle anderen Modelle abschneidet: Wir verzeichnen extrem hohe Residuen.
+
+- Dementsprechend erübrigt sich eine Analyse von Feature-Importance und Feature-Effects innerhalb eines "besten" Modells.
 
 ```{r}
 learner = lrn("regr.lm")
 learner$train(tsk_insurance, splits$train)
 predictions = learner$predict(tsk_insurance, splits$test)
 
-ggplot(predictions, aes(x = row_ids, y = abs(response - truth))) +
+ggplot(predictions, aes(x = truth, y = response)) +
   geom_point() +
   theme_bw() +
-  xlab("Beobachtung") +
-  ylab("Absolutes Residuum")
+  xlab("Beobachteter Versicherungsanspruch je Kunde je Jahr") +
+  ylab("Vorhersage")
 ```
 
-
 - Ich schlussfolgere, dass die Schätzung einer bedingten Dichte aufgrund fehlender Zusammenhänge hier nicht zum Ziel führt.
+
+- Dass weitere Ausreißer (beispielsweise im Bereich von 9000 EUR und 250000) das Modell verzerren, erscheint auch unplausibel, da robuste Techniken wie CART oder Random Forests ebenso sehr schlecht vorhersagen.
+
+### Mischverteilung
+
 - Es verbleibt die Möglichkeit, die marginale Dichte der Zielvariable zu modellieren; auch deshalb, weil für unsere Extremwerterteilung > 250.000 EUR eine passende theoretische Verteilung gefunden werden konnte.
+
 - Betrachten wir zunächst die empirische, marginale Verteilung der Zielvariable.
 
 ```{r} 
@@ -226,7 +273,6 @@ ggplot(claims_lower, aes(x = ClaimPerYear)) +
 ```
 
 - Aufgrund der großen Datenmenge können wir hier auch auf eine empirische CDF zurückgreifen.
-- Hierbei lässt sich anhand des abgefragten Quantils eine Wahrscheinlichkeit ableiten.
 
 ```{r}
 find_empirical_dist = function(x) {
@@ -247,24 +293,40 @@ empiricalProb = function(quantile, dist) {
 ```{r}
 emp_dist = find_empirical_dist(model_data$ClaimPerYear)
 empiricalProb(4000, emp_dist) - empiricalProb(3000, emp_dist)
-
 ```
 
-- Für die Wahrscheinlichkeiten für einen Versicherungsanspruch je Kunde je Jahr haben wir nun ein gemischtes Model (Mixture Model) mit geschätzten a-priori Wahrscheinlichkeiten von 99.5% und 0.5%.
+- Für die Wahrscheinlichkeiten für einen Versicherungsanspruch je Kunde je Jahr haben wir nun zwei unterschiedliche Verteilungen mit geschätzten a-priori-Wahrscheinlichkeiten von 99.5%, dass ein Versicherungsanspruch < 250.000 EUR ist, sowie von 0.5%, dass ein Versicherungsanspruch > 250.000 EUR ist.
 
 ```{r}
-p = nrow(claims_lower) / nrow(insurance_data)
+# unter 250.000
+p = nrow(model_data) / nrow(insurance_data)
 p
+# über 250.000
+1-p
 ```
 
-```{=latex}
+- Die zusammgensetzte Mischverteilung ist ein durch die a-priori-Wahrscheinlichkeiten gewichteter Durchschnitt der Verteilungen.
+
+$$
 \begin{equation}
-\mathbb{P}(\text{ClaimPerYear} = x) = 
-    0.995 \cdot \mathbb{P}_{\text{empirisch}}(x) + 0.005 \cdot \mathbb{P}_{\text{Pareto}}(x)
+  \text{CDF}(\text{ClaimPerYear} = x) = 0.995 \cdot \text{CDF}_{\text{empirisch}}(x) + 0.005 \cdot          
+  \text{CDF}_{\text{Pareto}}(x)
 \end{equation}
-```
+$$
 
-- Versicherungstechnisch können wir nun erwartete Verluste auf die Kunden umlegen.
+## Wirtschaftliche Umsetzung und Handlungsempfehlungen
+
+- Die Versicherungsgesellschaft kann nun erwartete Verluste auf die Kunden umlegen.
+
 - Da einzelnen Kundenmerkmale keine Vorhersagekraft bieten, können wir (noch) nicht zwischen Kunden preislich diskriminieren.
+
 - Hierzu sollten zusätzliche Kundenmerkmale eingeholt werden. Ausreichend Datenpunkte sind bereits vorhanden, d.h. mehr Daten der gleichen Art zu sammeln, wird keine Verbesserung unsererer Modelle liefern.
-- Darüber hinaus können wir die Mischverteilung noch optimieren: Schätzung theoretischer Verteilungen für normale Werte, mehr Komponenten in der Mischverteilung oder weitere Optimierung der Threshold.
+
+- Die zusammgesetzte Verteilung kann unter Umständen noch weiter optimiert werden: 
+  - Schätzung theoretischer Verteilungen für "reguläre" Versicherungsansprüche.
+  - Weitere Optimierung der Threshold.
+  - Einteilung der Versicherungsansprüche je Kunde je Jahr in mehr Segmente.
+  
+- Darüber hinaus können wir andere Modellierungsansätze prüfen, die für die Versicherungsgesellschaft relevant sein können:
+  - Die Wahrscheinlichkeit, dass ein Kunde überhaupt einen Schaden geltend macht.
+  - Die Häufigkeit eines Schadens je Kunde je Jahr.
